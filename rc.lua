@@ -6,49 +6,78 @@ require("awful.rules")
 require("beautiful")
 -- Notification library
 require("naughty")
-
+-- Vicious library
+require("vicious")
 
 -- Load Debian menu entries
 require("debian.menu")
 
---volume widget settings
-cardid  = 0
-channel = "Master"
-function volume (mode, widget)
- 	if mode == "update" then
-              local fd = io.popen("amixer -c " .. cardid .. " -- sget " .. channel)
-              local status = fd:read("*all")
-              fd:close()
- 		
- 		local volume = string.match(status, "(%d?%d?%d)%%")
- 		volume = string.format(" -|vol:% 3d ", volume)
- 
- 		status = string.match(status, "%[(o[^%]]*)%]")
- 
- 		if string.find(status, "on", 1, true) then
- 			volume = volume .. " |- "
- 		else
- 			volume = volume .. "M |- "
- 		end
- 		widget.text = volume
- 	elseif mode == "up" then
- 		io.popen("amixer -q -c " .. cardid .. " sset " .. channel .. " 5%+"):read("*all")
- 		volume("update", widget)
- 	elseif mode == "down" then
- 		io.popen("amixer -q -c " .. cardid .. " sset " .. channel .. " 5%-"):read("*all")
- 		volume("update", widget)
- 	else
- 		io.popen("amixer -c " .. cardid .. " sset " .. channel .. " toggle"):read("*all")
- 		volume("update", widget)
-	end
+-- {{{ Error handling
+-- Check if awesome encountered an error during startup and fell back to
+-- another config (This code will only ever execute for the fallback config)
+if awesome.startup_errors then
+    naughty.notify({ preset = naughty.config.presets.critical,
+                     title = "Oops, there were errors during startup!",
+                     text = awesome.startup_errors })
 end
 
+-- Handle runtime errors after startup
+do
+    local in_error = false
+    awesome.add_signal("debug::error", function (err)
+        -- Make sure we don't go into an endless error loop
+        if in_error then return end
+        in_error = true
 
+        naughty.notify({ preset = naughty.config.presets.critical,
+                         title = "Oops, an error happened!",
+                         text = err })
+        in_error = false
+    end)
+end
+-- }}}
+
+-- Volume control function
+function volume (mode, widget)
+     local cardid  = 0
+     local channel = "Master"
+     if mode == "update" then
+         local status = io.popen("amixer -c " .. cardid .. " -- sget " .. channel):read("*all")
+         
+         local volume = tonumber(string.match(status, "(%d?%d?%d)%%"))
+ 
+         status = string.match(status, "%[(o[^%]]*)%]")
+ 
+         local color = "#FF0000"
+         if string.find(status, "on", 1, true) then
+              color = "#97C0DE"
+         end
+         status = ""
+         for i = 1, math.floor(volume / 10) do
+             status = status .. "|"
+         end
+         for i = math.floor(volume / 10) + 1, 10 do
+             status = status .. "-"
+         end
+         status = "-[" ..status .. "]+"
+         widget.text = "<span color=\"" .. color .. "\">" .. status .. "</span>"
+     elseif mode == "up" then
+         os.execute("amixer -q -c " .. cardid .. " sset " .. channel .. " 5%+")
+         volume("update", widget)
+     elseif mode == "down" then
+         os.execute("amixer -q -c " .. cardid .. " sset " .. channel .. " 5%-")
+         volume("update", widget)
+     else
+         os.execute("amixer -c " .. cardid .. " sset " .. channel .. " toggle")
+         volume("update", widget)
+     end
+end
 
 -- {{{ Variable definitions
 -- Themes define colours, icons, and wallpapers
---beautiful.init("/usr/share/awesome/themes/aura/theme.lua")
-beautiful.init("/home/slingshot316/.config/awesome/themes/sel_black/theme.lua")
+beautiful.init("/home/selwyn/.config/awesome/themes/clean-blue/theme.lua")
+
+
 -- This is used later as the default terminal and editor to run.
 terminal = "x-terminal-emulator"
 editor = os.getenv("EDITOR") or "editor"
@@ -65,9 +94,9 @@ modkey = "Mod4"
 layouts =
 {
     --awful.layout.suit.floating,
-    awful.layout.suit.tile.bottom,
     awful.layout.suit.tile,
     awful.layout.suit.tile.left,
+    awful.layout.suit.tile.bottom,
     awful.layout.suit.tile.top,
     awful.layout.suit.fair,
     awful.layout.suit.fair.horizontal,
@@ -92,7 +121,7 @@ end
 -- Create a laucher widget and a main menu
 myawesomemenu = {
    { "manual", terminal .. " -e man awesome" },
-   { "edit config", editor_cmd .. " " .. awful.util.getdir("config") .. "/rc.lua" },
+   { "edit config", editor_cmd .. " " .. awesome.conffile },
    { "restart", awesome.restart },
    { "quit", awesome.quit }
 }
@@ -108,22 +137,59 @@ mylauncher = awful.widget.launcher({ image = image(beautiful.awesome_icon),
 -- }}}
 
 -- {{{ Wibox
+
+--Vicious Batter widget
+baticon = widget({ type = "imagebox" })
+baticon.image = image("/home/selwyn/.config/awesome/icons/bat.png")
+
+batwidget = widget({ type = "textbox" })
+
+vicious.register(batwidget, vicious.widgets.bat, function (widget, args)
+                 if args[2] <= 10 and args[1] ~= "+" then
+                        naughty.notify({ text="Battery is low! " .. args[2] .. " percent remaining." })
+                 end
+                 
+                 
+                 if args[1] == "+" then
+                   charge_symbol = " ⚡"
+                   battery_left = args[3] .. ", Charging" 
+                 else
+                   charge_symbol = ""
+                   battery_left = args[3]
+                end
+                return args[2] .. "%" .. charge_symbol
+                 end , 30, "BAT0")
+
+batwidget:add_signal('mouse::enter', function ()
+       batinfo = { naughty.notify({ title = "Time Remaining:",
+                               text  = battery_left 
+                               --[[, timeout    = 5
+                               , position   = "top_right"
+                               , fg         = beautiful.fg_focus
+                               , bg         = beautiful.bg_focus]]
+      })
+                   } end )
+batwidget:add_signal('mouse::leave', function () naughty.destroy(batinfo[1]) end)
+
+
+-- Volume widget
+tb_volume = widget({ type = "textbox", name = "tb_volume", align = "right" })
+tb_volume:buttons({
+  button({ }, 4, function () volume("up", tb_volume) end),
+  button({ }, 5, function () volume("down", tb_volume) end),
+  button({ }, 1, function () volume("mute", tb_volume) end)
+})
+volume("update", tb_volume)
+
+-- Seperator widget
+seperator = widget({ type = "textbox" })
+seperator.text = " | "
+
 -- Create a textclock widget
 mytextclock = awful.widget.textclock({ align = "right" })
 
 -- Create a systray
 mysystray = widget({ type = "systray" })
-
--- Volume Control
-tb_volume = widget({ type = "textbox", name = "tb_volume", align = "right" })
-tb_volume:buttons({
- 	button({ }, 4, function () volume("up", tb_volume) end),
- 	button({ }, 5, function () volume("down", tb_volume) end),
- 	button({ }, 1, function () volume("mute", tb_volume) end)
- })
- volume("update", tb_volume)
-
-
 
 -- Create a wibox for each screen and add it
 mywibox = {}
@@ -141,11 +207,17 @@ mytaglist.buttons = awful.util.table.join(
 mytasklist = {}
 mytasklist.buttons = awful.util.table.join(
                      awful.button({ }, 1, function (c)
-                                              if not c:isvisible() then
-                                                  awful.tag.viewonly(c:tags()[1])
+                                              if c == client.focus then
+                                                  c.minimized = true
+                                              else
+                                                  if not c:isvisible() then
+                                                      awful.tag.viewonly(c:tags()[1])
+                                                  end
+                                                  -- This will also un-minimize
+                                                  -- the client, if needed
+                                                  client.focus = c
+                                                  c:raise()
                                               end
-                                              client.focus = c
-                                              c:raise()
                                           end),
                      awful.button({ }, 3, function ()
                                               if instance then
@@ -163,8 +235,6 @@ mytasklist.buttons = awful.util.table.join(
                                               awful.client.focus.byidx(-1)
                                               if client.focus then client.focus:raise() end
                                           end))
-                                          
-
 
 for s = 1, screen.count() do
     -- Create a promptbox for each screen
@@ -195,14 +265,12 @@ for s = 1, screen.count() do
             mypromptbox[s],
             layout = awful.widget.layout.horizontal.leftright
         },
-        --mylayoutbox[s],
         mytextclock,
+        seperator, batwidget, baticon,
+        seperator, tb_volume, seperator,
         s == 1 and mysystray or nil,
-        tb_volume,
-        fraxbat,
         mytasklist[s],
         layout = awful.widget.layout.horizontal.rightleft
-        
     }
 end
 -- }}}
@@ -251,7 +319,6 @@ globalkeys = awful.util.table.join(
     awful.key({ modkey,           }, "Return", function () awful.util.spawn(terminal) end),
     awful.key({ modkey, "Control" }, "r", awesome.restart),
     awful.key({ modkey, "Shift"   }, "q", awesome.quit),
-    awful.key({ }, "Print", function () awful.util.spawn("scrot -e 'mv $f ~/screenshots/ 2>/dev/null'") end),
 
     awful.key({ modkey,           }, "l",     function () awful.tag.incmwfact( 0.05)    end),
     awful.key({ modkey,           }, "h",     function () awful.tag.incmwfact(-0.05)    end),
@@ -264,10 +331,7 @@ globalkeys = awful.util.table.join(
     awful.key({ }, "XF86AudioRaiseVolume", function () volume("up", tb_volume) end),
     awful.key({ }, "XF86AudioLowerVolume", function () volume("down", tb_volume) end),
     awful.key({ }, "XF86AudioMute", function () volume("mute", tb_volume) end),
-    awful.key({ modkey }, "b", function () 
-    mywibox[mouse.screen].visible = not mywibox[mouse.screen].visible end),
-
-
+    awful.key({ modkey, "Control" }, "n", awful.client.restore),
 
     -- Prompt
     awful.key({ modkey },            "r",     function () mypromptbox[mouse.screen]:run() end),
@@ -289,7 +353,12 @@ clientkeys = awful.util.table.join(
     awful.key({ modkey,           }, "o",      awful.client.movetoscreen                        ),
     awful.key({ modkey, "Shift"   }, "r",      function (c) c:redraw()                       end),
     awful.key({ modkey,           }, "t",      function (c) c.ontop = not c.ontop            end),
-    awful.key({ modkey,           }, "n",      function (c) c.minimized = not c.minimized    end),
+    awful.key({ modkey,           }, "n",
+        function (c)
+            -- The client currently has the input focus, so it cannot be
+            -- minimized, since minimized clients can't have the focus.
+            c.minimized = true
+        end),
     awful.key({ modkey,           }, "m",
         function (c)
             c.maximized_horizontal = not c.maximized_horizontal
@@ -354,12 +423,16 @@ awful.rules.rules = {
                      focus = true,
                      keys = clientkeys,
                      buttons = clientbuttons } },
-    { rule = { class = "banshee-1" },
-      properties = { tag = tags[1][4] } },
+    { rule = { class = "MPlayer" },
+      properties = { floating = true } },
     { rule = { class = "pinentry" },
       properties = { floating = true } },
     { rule = { class = "gimp" },
       properties = { floating = true } },
+
+    -- Set Firefox to always map on tags number 2 of screen 1.
+    -- { rule = { class = "Firefox" },
+    --   properties = { tag = tags[1][2] } },
 }
 -- }}}
 
@@ -393,11 +466,9 @@ end)
 client.add_signal("focus", function(c) c.border_color = beautiful.border_focus end)
 client.add_signal("unfocus", function(c) c.border_color = beautiful.border_normal end)
 -- }}}
-os.execute("nm-applet &")
-os.execute("gnome-power-manager &")
-os.execute("feh --bg-scale /home/slingshot316/Pictures/bands/john.jpg &")
+--volume widget hooker
 awful.hooks.timer.register(10, function () volume("update", tb_volume) end)
 
---os.execute("wicd-client &")
-
-
+--nm-applet
+awful.util.spawn_with_shell("/usr/lib/policykit-1-gnome/polkit-gnome-authentication-agent-1")
+awful.util.spawn_with_shell("run_once nm-applet")
